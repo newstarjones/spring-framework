@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,15 +21,16 @@ import java.util.Collections;
 import java.util.List;
 import java.util.function.Consumer;
 
-import org.springframework.http.codec.CodecConfigurer;
 import org.springframework.http.codec.HttpMessageReader;
 import org.springframework.http.codec.HttpMessageWriter;
 import org.springframework.http.codec.ServerCodecConfigurer;
 import org.springframework.util.Assert;
+import org.springframework.web.reactive.handler.WebFluxResponseStatusExceptionHandler;
 import org.springframework.web.reactive.result.view.ViewResolver;
 import org.springframework.web.server.WebExceptionHandler;
 import org.springframework.web.server.WebFilter;
-import org.springframework.web.server.handler.ResponseStatusExceptionHandler;
+import org.springframework.web.server.i18n.AcceptHeaderLocaleContextResolver;
+import org.springframework.web.server.i18n.LocaleContextResolver;
 
 /**
  * Default implementation of {@link HandlerStrategies.Builder}.
@@ -47,50 +48,51 @@ class DefaultHandlerStrategiesBuilder implements HandlerStrategies.Builder {
 
 	private final List<WebExceptionHandler> exceptionHandlers = new ArrayList<>();
 
+	private LocaleContextResolver localeContextResolver = new AcceptHeaderLocaleContextResolver();
+
 
 	public DefaultHandlerStrategiesBuilder() {
 		this.codecConfigurer.registerDefaults(false);
 	}
 
+
 	public void defaultConfiguration() {
 		this.codecConfigurer.registerDefaults(true);
-		exceptionHandler(new ResponseStatusExceptionHandler());
+		this.exceptionHandlers.add(new WebFluxResponseStatusExceptionHandler());
+		this.localeContextResolver = new AcceptHeaderLocaleContextResolver();
 	}
 
 	@Override
-	public HandlerStrategies.Builder defaultCodecs(
-			Consumer<ServerCodecConfigurer.ServerDefaultCodecsConfigurer> consumer) {
-		Assert.notNull(consumer, "'consumer' must not be null");
-		consumer.accept(this.codecConfigurer.defaultCodecs());
-		return this;
-	}
-
-	@Override
-	public HandlerStrategies.Builder customCodecs(
-			Consumer<CodecConfigurer.CustomCodecsConfigurer> consumer) {
-		Assert.notNull(consumer, "'consumer' must not be null");
-		consumer.accept(this.codecConfigurer.customCodecs());
+	public HandlerStrategies.Builder codecs(Consumer<ServerCodecConfigurer> consumer) {
+		consumer.accept(this.codecConfigurer);
 		return this;
 	}
 
 	@Override
 	public HandlerStrategies.Builder viewResolver(ViewResolver viewResolver) {
-		Assert.notNull(viewResolver, "'viewResolver' must not be null");
+		Assert.notNull(viewResolver, "ViewResolver must not be null");
 		this.viewResolvers.add(viewResolver);
 		return this;
 	}
 
 	@Override
 	public HandlerStrategies.Builder webFilter(WebFilter filter) {
-		Assert.notNull(filter, "'filter' must not be null");
+		Assert.notNull(filter, "WebFilter must not be null");
 		this.webFilters.add(filter);
 		return this;
 	}
 
 	@Override
 	public HandlerStrategies.Builder exceptionHandler(WebExceptionHandler exceptionHandler) {
-		Assert.notNull(exceptionHandler, "'exceptionHandler' must not be null");
+		Assert.notNull(exceptionHandler, "WebExceptionHandler must not be null");
 		this.exceptionHandlers.add(exceptionHandler);
+		return this;
+	}
+
+	@Override
+	public HandlerStrategies.Builder localeContextResolver(LocaleContextResolver localeContextResolver) {
+		Assert.notNull(localeContextResolver, "LocaleContextResolver must not be null");
+		this.localeContextResolver = localeContextResolver;
 		return this;
 	}
 
@@ -98,7 +100,7 @@ class DefaultHandlerStrategiesBuilder implements HandlerStrategies.Builder {
 	public HandlerStrategies build() {
 		return new DefaultHandlerStrategies(this.codecConfigurer.getReaders(),
 				this.codecConfigurer.getWriters(), this.viewResolvers, this.webFilters,
-				this.exceptionHandlers);
+				this.exceptionHandlers, this.localeContextResolver);
 	}
 
 
@@ -114,18 +116,22 @@ class DefaultHandlerStrategiesBuilder implements HandlerStrategies.Builder {
 
 		private final List<WebExceptionHandler> exceptionHandlers;
 
+		private final LocaleContextResolver localeContextResolver;
+
 		public DefaultHandlerStrategies(
 				List<HttpMessageReader<?>> messageReaders,
 				List<HttpMessageWriter<?>> messageWriters,
 				List<ViewResolver> viewResolvers,
 				List<WebFilter> webFilters,
-				List<WebExceptionHandler> exceptionHandlers) {
+				List<WebExceptionHandler> exceptionHandlers,
+				LocaleContextResolver localeContextResolver) {
 
 			this.messageReaders = unmodifiableCopy(messageReaders);
 			this.messageWriters = unmodifiableCopy(messageWriters);
 			this.viewResolvers = unmodifiableCopy(viewResolvers);
 			this.webFilters = unmodifiableCopy(webFilters);
 			this.exceptionHandlers = unmodifiableCopy(exceptionHandlers);
+			this.localeContextResolver = localeContextResolver;
 		}
 
 		private static <T> List<T> unmodifiableCopy(List<? extends T> list) {
@@ -155,6 +161,11 @@ class DefaultHandlerStrategiesBuilder implements HandlerStrategies.Builder {
 		@Override
 		public List<WebExceptionHandler> exceptionHandlers() {
 			return this.exceptionHandlers;
+		}
+
+		@Override
+		public LocaleContextResolver localeContextResolver() {
+			return this.localeContextResolver;
 		}
 	}
 

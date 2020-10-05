@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,27 +16,28 @@
 
 package org.springframework.web.util.pattern;
 
-import java.util.LinkedList;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.springframework.util.AntPathMatcher;
+import org.springframework.http.server.PathContainer.PathSegment;
 import org.springframework.web.util.pattern.PathPattern.MatchingContext;
 
 /**
  * A regex path element. Used to represent any complicated element of the path.
  * For example in '<tt>/foo/&ast;_&ast;/&ast;_{foobar}</tt>' both <tt>*_*</tt> and <tt>*_{foobar}</tt>
- * are {@link RegexPathElement} path elements. Derived from the general {@link AntPathMatcher} approach.
+ * are {@link RegexPathElement} path elements. Derived from the general
+ * {@link org.springframework.util.AntPathMatcher} approach.
  *
  * @author Andy Clement
  * @since 5.0
  */
 class RegexPathElement extends PathElement {
 
-	private final Pattern GLOB_PATTERN = Pattern.compile("\\?|\\*|\\{((?:\\{[^/]+?\\}|[^/{}]|\\\\[{}])+?)\\}");
+	private static final Pattern GLOB_PATTERN = Pattern.compile("\\?|\\*|\\{((?:\\{[^/]+?}|[^/{}]|\\\\[{}])+?)}");
 
-	private final String DEFAULT_VARIABLE_PATTERN = "(.*)";
+	private static final String DEFAULT_VARIABLE_PATTERN = "(.*)";
 
 
 	private final char[] regex;
@@ -47,7 +48,7 @@ class RegexPathElement extends PathElement {
 
 	private int wildcardCount;
 
-	private final List<String> variableNames = new LinkedList<>();
+	private final List<String> variableNames = new ArrayList<>();
 
 
 	RegexPathElement(int pos, char[] regex, boolean caseSensitive, char[] completePattern, char separator) {
@@ -72,7 +73,12 @@ class RegexPathElement extends PathElement {
 			}
 			else if ("*".equals(match)) {
 				patternBuilder.append(".*");
-				this.wildcardCount++;
+				int pos = matcher.start();
+				if (pos < 1 || text.charAt(pos-1) != '.') {
+					// To be compatible with the AntPathMatcher comparator,
+					// '.*' is not considered a wildcard usage
+					this.wildcardCount++;
+				}
 			}
 			else if (match.startsWith("{") && match.endsWith("}")) {
 				int colonIdx = match.indexOf(':');
@@ -122,35 +128,33 @@ class RegexPathElement extends PathElement {
 	}
 
 	@Override
-	public boolean matches(int candidateIndex, MatchingContext matchingContext) {
-		int pos = matchingContext.scanAhead(candidateIndex);
-		Matcher matcher = this.pattern.matcher(new SubSequence(matchingContext.candidate, candidateIndex, pos));
+	public boolean matches(int pathIndex, MatchingContext matchingContext) {
+		String textToMatch = matchingContext.pathElementValue(pathIndex);
+		Matcher matcher = this.pattern.matcher(textToMatch);
 		boolean matches = matcher.matches();
 
 		if (matches) {
-			if (this.next == null) {
-				if (matchingContext.determineRemainingPath && 
-					((this.variableNames.size() == 0) ? true : pos > candidateIndex)) {
-					matchingContext.remainingPathIndex = pos;
+			if (isNoMorePattern()) {
+				if (matchingContext.determineRemainingPath &&
+					(this.variableNames.isEmpty() || textToMatch.length() > 0)) {
+					matchingContext.remainingPathIndex = pathIndex + 1;
 					matches = true;
 				}
 				else {
 					// No more pattern, is there more data?
 					// If pattern is capturing variables there must be some actual data to bind to them
-					matches = (pos == matchingContext.candidateLength &&
-							   ((this.variableNames.size() == 0) ? true : pos > candidateIndex));
-					if (!matches && matchingContext.isAllowOptionalTrailingSlash()) {
-						matches = ((this.variableNames.size() == 0) ? true : pos > candidateIndex) &&
-							      (pos + 1) == matchingContext.candidateLength &&
-							      matchingContext.candidate[pos] == separator;
+					matches = (pathIndex + 1) >= matchingContext.pathLength
+							&& (this.variableNames.isEmpty() || textToMatch.length() > 0);
+					if (!matches && matchingContext.isMatchOptionalTrailingSeparator()) {
+						matches = (this.variableNames.isEmpty()
+								|| textToMatch.length() > 0)
+								&& (pathIndex + 2) >= matchingContext.pathLength
+								&& matchingContext.isSeparator(pathIndex + 1);
 					}
 				}
 			}
 			else {
-				if (matchingContext.isMatchStartMatching && pos == matchingContext.candidateLength) {
-					return true; // no more data but matches up to this point
-				}
-				matches = this.next.matches(pos, matchingContext);
+				matches = (this.next != null && this.next.matches(pathIndex + 1, matchingContext));
 			}
 		}
 
@@ -165,7 +169,10 @@ class RegexPathElement extends PathElement {
 			for (int i = 1; i <= matcher.groupCount(); i++) {
 				String name = this.variableNames.get(i - 1);
 				String value = matcher.group(i);
-				matchingContext.set(name, value);
+				matchingContext.set(name, value,
+						(i == this.variableNames.size())?
+								((PathSegment)matchingContext.pathElements.get(pathIndex)).parameters():
+								NO_PARAMETERS);
 			}
 		}
 		return matches;
@@ -180,6 +187,7 @@ class RegexPathElement extends PathElement {
 		return (this.regex.length - varsLength - this.variableNames.size());
 	}
 
+	@Override
 	public int getCaptureCount() {
 		return this.variableNames.size();
 	}
@@ -195,8 +203,13 @@ class RegexPathElement extends PathElement {
 	}
 
 
+	@Override
 	public String toString() {
 		return "Regex(" + String.valueOf(this.regex) + ")";
 	}
 
+	@Override
+	public char[] getChars() {
+		return this.regex;
+	}
 }

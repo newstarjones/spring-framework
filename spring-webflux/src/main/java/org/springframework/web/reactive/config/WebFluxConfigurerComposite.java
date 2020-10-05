@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,16 +18,19 @@ package org.springframework.web.reactive.config;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.springframework.format.FormatterRegistry;
 import org.springframework.http.codec.ServerCodecConfigurer;
+import org.springframework.lang.Nullable;
 import org.springframework.util.CollectionUtils;
 import org.springframework.validation.MessageCodesResolver;
 import org.springframework.validation.Validator;
 import org.springframework.web.reactive.accept.RequestedContentTypeResolverBuilder;
 import org.springframework.web.reactive.result.method.annotation.ArgumentResolverConfigurer;
+import org.springframework.web.reactive.socket.server.WebSocketService;
 
 /**
  * A {@link WebFluxConfigurer} that delegates to one or more others.
@@ -68,6 +71,12 @@ public class WebFluxConfigurerComposite implements WebFluxConfigurer {
 		this.delegates.forEach(delegate -> delegate.addResourceHandlers(registry));
 	}
 
+	@Nullable
+	@Override
+	public WebSocketService getWebSocketService() {
+		return createSingleBean(WebFluxConfigurer::getWebSocketService, WebSocketService.class);
+	}
+
 	@Override
 	public void configureArgumentResolvers(ArgumentResolverConfigurer configurer) {
 		this.delegates.forEach(delegate -> delegate.configureArgumentResolvers(configurer));
@@ -98,8 +107,9 @@ public class WebFluxConfigurerComposite implements WebFluxConfigurer {
 		this.delegates.forEach(delegate -> delegate.configureViewResolvers(registry));
 	}
 
+	@Nullable
 	private <T> T createSingleBean(Function<WebFluxConfigurer, T> factory, Class<T> beanType) {
-		List<T> result = this.delegates.stream().map(factory).filter(t -> t != null).collect(Collectors.toList());
+		List<T> result = this.delegates.stream().map(factory).filter(Objects::nonNull).collect(Collectors.toList());
 		if (result.isEmpty()) {
 			return null;
 		}
