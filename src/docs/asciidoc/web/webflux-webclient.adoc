@@ -102,7 +102,7 @@ To change the limit for default codecs, use the following:
 .Java
 ----
 	WebClient webClient = WebClient.builder()
-			.codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(2 * 1024 * 1024));
+			.codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(2 * 1024 * 1024))
 			.build();
 ----
 [source,kotlin,indent=0,subs="verbatim,quotes",role="secondary"]
@@ -537,33 +537,49 @@ responses, use `onStatus` handlers as follows:
 
 
 [[webflux-client-exchange]]
-== `exchangeToMono()`
+== Exchange
 
-The `exchangeToMono()` and `exchangeToFlux()` methods are useful for more advanced
-cases that require more control, such as to decode the response differently
+The `exchangeToMono()` and `exchangeToFlux()` methods (or `awaitExchange { }` and `exchangeToFlow { }` in Kotlin)
+are useful for more advanced cases that require more control, such as to decode the response differently
 depending on the response status:
 
 [source,java,indent=0,subs="verbatim,quotes",role="primary"]
 .Java
 ----
 	Mono<Object> entityMono = client.get()
-		   .uri("/persons/1")
-		   .accept(MediaType.APPLICATION_JSON)
-		   .exchangeToMono(response -> {
-			   if (response.statusCode().equals(HttpStatus.OK)) {
-				   return response.bodyToMono(Person.class);
-			   }
-			   else if (response.statusCode().is4xxClientError()) {
-				   return response.bodyToMono(ErrorContainer.class);
-			   }
-			   else {
-				   return Mono.error(response.createException());
-			   }
-		   });
+			.uri("/persons/1")
+			.accept(MediaType.APPLICATION_JSON)
+			.exchangeToMono(response -> {
+				if (response.statusCode().equals(HttpStatus.OK)) {
+					return response.bodyToMono(Person.class);
+				}
+				else if (response.statusCode().is4xxClientError()) {
+					// Suppress error status code
+					return response.bodyToMono(ErrorContainer.class);
+				}
+				else {
+					// Turn to error
+					return response.createException().flatMap(Mono::error);
+				}
+			});
 ----
 [source,kotlin,indent=0,subs="verbatim,quotes",role="secondary"]
 .Kotlin
 ----
+val entity = client.get()
+  .uri("/persons/1")
+  .accept(MediaType.APPLICATION_JSON)
+  .awaitExchange {
+		if (response.statusCode() == HttpStatus.OK) {
+			 return response.awaitBody<Person>()
+		}
+		else if (response.statusCode().is4xxClientError) {
+			 return response.awaitBody<ErrorContainer>()
+		}
+		else {
+			 throw response.createExceptionAndAwait()
+		}
+  }
 ----
 
 When using the above, after the returned `Mono` or `Flux` completes, the response body
@@ -817,7 +833,7 @@ inline-style, through the built-in `BodyInserters`, as the following example sho
 
 
 [[webflux-client-filter]]
-== Client Filters
+== Filters
 
 You can register a client filter (`ExchangeFilterFunction`) through the `WebClient.Builder`
 in order to intercept and modify requests, as the following example shows:
@@ -873,9 +889,83 @@ a filter for basic authentication through a static factory method:
 			.build()
 ----
 
-Filters apply globally to every request. To change a filter's behavior for a specific
-request, you can add request attributes to the `ClientRequest` that can then be accessed
-by all filters in the chain, as the following example shows:
+Filters can be added or removed by mutating an existing `WebClient` instance, resulting
+in a new `WebClient` instance that does not affect the original one. For example:
+
+[source,java,indent=0,subs="verbatim,quotes",role="primary"]
+.Java
+----
+	import static org.springframework.web.reactive.function.client.ExchangeFilterFunctions.basicAuthentication;
+
+	WebClient client = webClient.mutate()
+			.filters(filterList -> {
+				filterList.add(0, basicAuthentication("user", "password"));
+			})
+			.build();
+----
+[source,kotlin,indent=0,subs="verbatim,quotes",role="secondary"]
+.Kotlin
+----
+	val client = webClient.mutate()
+			.filters { it.add(0, basicAuthentication("user", "password")) }
+			.build()
+----
+
+`WebClient` is a thin facade around the chain of filters followed by an
+`ExchangeFunction`. It provides a workflow to make requests, to encode to and from higher
+level objects, and it helps to ensure that response content is always consumed.
+When filters handle the response in some way, extra care must be taken to always consume
+its content or to otherwise propagate it downstream to the `WebClient` which will ensure
+the same. Below is a filter that handles the `UNAUTHORIZED` status code but ensures that
+any response content, whether expected or not, is released:
+
+[source,java,indent=0,subs="verbatim,quotes",role="primary"]
+.Java
+----
+	public ExchangeFilterFunction renewTokenFilter() {
+		return (request, next) -> next.exchange(request).flatMap(response -> {
+			if (response.statusCode().value() == HttpStatus.UNAUTHORIZED.value()) {
+				return response.releaseBody()
+						.then(renewToken())
+						.flatMap(token -> {
+							ClientRequest newRequest = ClientRequest.from(request).build();
+							return next.exchange(newRequest);
+						});
+			} else {
+				return Mono.just(response);
+			}
+		});
+	}
+----
+[source,kotlin,indent=0,subs="verbatim,quotes",role="secondary"]
+.Kotlin
+----
+	fun renewTokenFilter(): ExchangeFilterFunction? {
+		return ExchangeFilterFunction { request: ClientRequest?, next: ExchangeFunction ->
+			next.exchange(request!!).flatMap { response: ClientResponse ->
+				if (response.statusCode().value() == HttpStatus.UNAUTHORIZED.value()) {
+					return@flatMap response.releaseBody()
+							.then(renewToken())
+							.flatMap { token: String? ->
+								val newRequest = ClientRequest.from(request).build()
+								next.exchange(newRequest)
+							}
+				} else {
+					return@flatMap Mono.just(response)
+				}
+			}
+		}
+	}
+----
+
+
+
+[[webflux-client-attributes]]
+== Attributes
+
+You can add attributes to a request. This is convenient if you want to pass information
+through the filter chain and influence the behavior of filters for a given request.
+For example:
 
 [source,java,indent=0,subs="verbatim,quotes",role="primary"]
 .Java
@@ -898,10 +988,11 @@ by all filters in the chain, as the following example shows:
 .Kotlin
 ----
 	val client = WebClient.builder()
-				.filter { request, _ ->
-			val usr = request.attributes()["myAttribute"];
-			// ...
-		}.build()
+			.filter { request, _ ->
+				val usr = request.attributes()["myAttribute"];
+				// ...
+			}
+			.build()
 
 		client.get().uri("https://example.org/")
 				.attribute("myAttribute", "...")
@@ -909,27 +1000,41 @@ by all filters in the chain, as the following example shows:
 				.awaitBody<Unit>()
 ----
 
-You can also replicate an existing `WebClient`, insert new filters, or remove already
-registered filters. The following example, inserts a basic authentication filter at
-index 0:
+Note that you can configure a `defaultRequest` callback globally at the
+`WebClient.Builder` level which lets you insert attributes into all requests,
+which could be used for example in a Spring MVC application to populate
+request attributes based on `ThreadLocal` data.
+
+
+[[webflux-client-context]]
+== Context
+
+<<webflux-client-attributes>> provide a convenient way to pass information to the filter
+chain but they only influence the current request. If you want to pass information that
+propagates to additional requests that are nested, e.g. via `flatMap`, or executed after,
+e.g. via `concatMap`, then you'll need to use the Reactor `Context`.
+
+The Reactor `Context` needs to be populated at the end of a reactive chain in order to
+apply to all operations. For example:
 
 [source,java,indent=0,subs="verbatim,quotes",role="primary"]
 .Java
 ----
-	import static org.springframework.web.reactive.function.client.ExchangeFilterFunctions.basicAuthentication;
-
-	WebClient client = webClient.mutate()
-			.filters(filterList -> {
-				filterList.add(0, basicAuthentication("user", "password"));
-			})
+	WebClient client = WebClient.builder()
+			.filter((request, next) ->
+					Mono.deferContextual(contextView -> {
+						String value = contextView.get("foo");
+						// ...
+					}))
 			.build();
-----
-[source,kotlin,indent=0,subs="verbatim,quotes",role="secondary"]
-.Kotlin
-----
-	val client = webClient.mutate()
-			.filters { it.add(0, basicAuthentication("user", "password")) }
-			.build()
+
+	client.get().uri("https://example.org/")
+			.retrieve()
+			.bodyToMono(String.class)
+			.flatMap(body -> {
+					// perform nested request (context propagates automatically)...
+			})
+			.contextWrite(context -> context.put("foo", ...));
 ----
 
 
@@ -1025,7 +1130,7 @@ controller method .
 To test code that uses the `WebClient`, you can use a mock web server, such as the
 https://github.com/square/okhttp#mockwebserver[OkHttp MockWebServer]. To see an example
 of its use, check out
-https://github.com/spring-projects/spring-framework/blob/master/spring-webflux/src/test/java/org/springframework/web/reactive/function/client/WebClientIntegrationTests.java[`WebClientIntegrationTests`]
+{spring-framework-main-code}/spring-webflux/src/test/java/org/springframework/web/reactive/function/client/WebClientIntegrationTests.java[`WebClientIntegrationTests`]
 in the Spring Framework test suite or the
 https://github.com/square/okhttp/tree/master/samples/static-server[`static-server`]
 sample in the OkHttp repository.
