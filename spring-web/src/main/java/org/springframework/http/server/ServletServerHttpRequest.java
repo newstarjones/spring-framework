@@ -92,12 +92,12 @@ public class ServletServerHttpRequest implements ServerHttpRequest {
 	}
 
 	@Override
-	@Nullable
 	public HttpMethod getMethod() {
-		return HttpMethod.resolve(this.servletRequest.getMethod());
+		return HttpMethod.valueOf(this.servletRequest.getMethod());
 	}
 
 	@Override
+	@Deprecated
 	public String getMethodValue() {
 		return this.servletRequest.getMethod();
 	}
@@ -216,11 +216,10 @@ public class ServletServerHttpRequest implements ServerHttpRequest {
 	@Override
 	public ServerHttpAsyncRequestControl getAsyncRequestControl(ServerHttpResponse response) {
 		if (this.asyncRequestControl == null) {
-			if (!(response instanceof ServletServerHttpResponse)) {
+			if (!(response instanceof ServletServerHttpResponse servletServerResponse)) {
 				throw new IllegalArgumentException(
 						"Response must be a ServletServerHttpResponse: " + response.getClass());
 			}
-			ServletServerHttpResponse servletServerResponse = (ServletServerHttpResponse) response;
 			this.asyncRequestControl = new ServletServerHttpAsyncRequestControl(this, servletServerResponse);
 		}
 		return this.asyncRequestControl;
@@ -250,10 +249,10 @@ public class ServletServerHttpRequest implements ServerHttpRequest {
 			List<String> values = Arrays.asList(entry.getValue());
 			for (Iterator<String> valueIterator = values.iterator(); valueIterator.hasNext();) {
 				String value = valueIterator.next();
-				writer.write(URLEncoder.encode(name, FORM_CHARSET.name()));
+				writer.write(URLEncoder.encode(name, FORM_CHARSET));
 				if (value != null) {
 					writer.write('=');
-					writer.write(URLEncoder.encode(value, FORM_CHARSET.name()));
+					writer.write(URLEncoder.encode(value, FORM_CHARSET));
 					if (valueIterator.hasNext()) {
 						writer.write('&');
 					}

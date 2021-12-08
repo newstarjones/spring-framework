@@ -419,14 +419,6 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 		return pvs;
 	}
 
-	@Deprecated
-	@Override
-	public PropertyValues postProcessPropertyValues(
-			PropertyValues pvs, PropertyDescriptor[] pds, Object bean, String beanName) {
-
-		return postProcessProperties(pvs, bean, beanName);
-	}
-
 	/**
 	 * 'Native' processing method for direct calls with an arbitrary target instance,
 	 * resolving all of its fields and methods which are annotated with one of the
@@ -471,7 +463,7 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 		return metadata;
 	}
 
-	private InjectionMetadata buildAutowiringMetadata(final Class<?> clazz) {
+	private InjectionMetadata buildAutowiringMetadata(Class<?> clazz) {
 		if (!AnnotationUtils.isCandidateClass(clazz, this.autowiredAnnotationTypes)) {
 			return InjectionMetadata.EMPTY;
 		}
@@ -550,6 +542,8 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 	 * @return whether the annotation indicates that a dependency is required
 	 */
 	protected boolean determineRequiredStatus(MergedAnnotation<?> ann) {
+		// Cast to (AnnotationAttributes) is required. Otherwise, the :spring-beans:compileGroovy
+		// task fails in the Gradle build.
 		return determineRequiredStatus((AnnotationAttributes)
 				ann.asMap(mergedAnnotation -> new AnnotationAttributes(mergedAnnotation.getType())));
 	}

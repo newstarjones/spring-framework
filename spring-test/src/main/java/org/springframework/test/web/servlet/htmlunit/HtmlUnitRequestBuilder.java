@@ -18,7 +18,6 @@ package org.springframework.test.web.servlet.htmlunit;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.Charset;
@@ -370,8 +369,7 @@ final class HtmlUnitRequestBuilder implements RequestBuilder, Mergeable {
 			});
 		});
 		for (NameValuePair param : this.webRequest.getRequestParameters()) {
-			if (param instanceof KeyDataPair) {
-				KeyDataPair pair = (KeyDataPair) param;
+			if (param instanceof KeyDataPair pair) {
 				File file = pair.getFile();
 				MockPart part;
 				if (file != null) {
@@ -397,12 +395,7 @@ final class HtmlUnitRequestBuilder implements RequestBuilder, Mergeable {
 	}
 
 	private String urlDecode(String value) {
-		try {
-			return URLDecoder.decode(value, "UTF-8");
-		}
-		catch (UnsupportedEncodingException ex) {
-			throw new IllegalStateException(ex);
-		}
+		return URLDecoder.decode(value, StandardCharsets.UTF_8);
 	}
 
 	private byte[] readAllBytes(File file) {

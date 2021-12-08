@@ -100,9 +100,9 @@ public abstract class BeanUtils {
 	 * @param clazz class to instantiate
 	 * @return the new instance
 	 * @throws BeanInstantiationException if the bean cannot be instantiated
+	 * @see Class#newInstance()
 	 * @deprecated as of Spring 5.0, following the deprecation of
 	 * {@link Class#newInstance()} in JDK 9
-	 * @see Class#newInstance()
 	 */
 	@Deprecated
 	public static <T> T instantiate(Class<T> clazz) throws BeanInstantiationException {
@@ -142,19 +142,20 @@ public abstract class BeanUtils {
 		if (clazz.isInterface()) {
 			throw new BeanInstantiationException(clazz, "Specified class is an interface");
 		}
+		Constructor<T> ctor;
 		try {
-			return instantiateClass(clazz.getDeclaredConstructor());
+			ctor = clazz.getDeclaredConstructor();
 		}
 		catch (NoSuchMethodException ex) {
-			Constructor<T> ctor = findPrimaryConstructor(clazz);
-			if (ctor != null) {
-				return instantiateClass(ctor);
+			ctor = findPrimaryConstructor(clazz);
+			if (ctor == null) {
+				throw new BeanInstantiationException(clazz, "No default constructor found", ex);
 			}
-			throw new BeanInstantiationException(clazz, "No default constructor found", ex);
 		}
 		catch (LinkageError err) {
 			throw new BeanInstantiationException(clazz, "Unresolvable class definition", err);
 		}
+		return instantiateClass(ctor);
 	}
 
 	/**
@@ -540,7 +541,7 @@ public abstract class BeanUtils {
 
 	/**
 	 * Find a JavaBeans PropertyEditor following the 'Editor' suffix convention
-	 * (e.g. "mypackage.MyDomainClass" -> "mypackage.MyDomainClassEditor").
+	 * (e.g. "mypackage.MyDomainClass" &rarr; "mypackage.MyDomainClassEditor").
 	 * <p>Compatible to the standard JavaBeans convention as implemented by
 	 * {@link java.beans.PropertyEditorManager} but isolated from the latter's
 	 * registered default editors for primitive types.

@@ -130,6 +130,10 @@ import org.springframework.util.StringValueResolver;
 public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBeanPostProcessor
 		implements InstantiationAwareBeanPostProcessor, BeanFactoryAware, Serializable {
 
+	// Defensive reference to JNDI API for JDK 9+ (optional java.naming module)
+	private static final boolean jndiPresent = ClassUtils.isPresent(
+			"javax.naming.InitialContext", CommonAnnotationBeanPostProcessor.class.getClassLoader());
+
 	private static final Set<Class<? extends Annotation>> resourceAnnotationTypes = new LinkedHashSet<>(4);
 
 	@Nullable
@@ -151,7 +155,8 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 
 	private boolean alwaysUseJndiLookup = false;
 
-	private transient BeanFactory jndiFactory = new SimpleJndiBeanFactory();
+	@Nullable
+	private transient BeanFactory jndiFactory;
 
 	@Nullable
 	private transient BeanFactory resourceFactory;
@@ -175,6 +180,11 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 		setOrder(Ordered.LOWEST_PRECEDENCE - 3);
 		setInitAnnotationType(PostConstruct.class);
 		setDestroyAnnotationType(PreDestroy.class);
+
+		// java.naming module present on JDK 9+?
+		if (jndiPresent) {
+			this.jndiFactory = new SimpleJndiBeanFactory();
+		}
 	}
 
 
@@ -217,7 +227,7 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 
 	/**
 	 * Specify the factory for objects to be injected into {@code @Resource} /
-	 * {@code @WebServiceRef} / {@code @EJB} annotated fields and setter methods,
+	 * {@code @EJB} annotated fields and setter methods,
 	 * <b>for {@code mappedName} attributes that point directly into JNDI</b>.
 	 * This factory will also be used if "alwaysUseJndiLookup" is set to "true" in order
 	 * to enforce JNDI lookups even for {@code name} attributes and default names.
@@ -233,7 +243,7 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 
 	/**
 	 * Specify the factory for objects to be injected into {@code @Resource} /
-	 * {@code @WebServiceRef} / {@code @EJB} annotated fields and setter methods,
+	 * {@code @EJB} annotated fields and setter methods,
 	 * <b>for {@code name} attributes and default names</b>.
 	 * <p>The default is the BeanFactory that this post-processor is defined in,
 	 * if any, looking up resource names as Spring bean names. Specify the resource
@@ -256,8 +266,8 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 		if (this.resourceFactory == null) {
 			this.resourceFactory = beanFactory;
 		}
-		if (beanFactory instanceof ConfigurableBeanFactory) {
-			this.embeddedValueResolver = new EmbeddedValueResolver((ConfigurableBeanFactory) beanFactory);
+		if (beanFactory instanceof ConfigurableBeanFactory configurableBeanFactory) {
+			this.embeddedValueResolver = new EmbeddedValueResolver(configurableBeanFactory);
 		}
 	}
 
@@ -296,16 +306,8 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 		return pvs;
 	}
 
-	@Deprecated
-	@Override
-	public PropertyValues postProcessPropertyValues(
-			PropertyValues pvs, PropertyDescriptor[] pds, Object bean, String beanName) {
 
-		return postProcessProperties(pvs, bean, beanName);
-	}
-
-
-	private InjectionMetadata findResourceMetadata(String beanName, final Class<?> clazz, @Nullable PropertyValues pvs) {
+	private InjectionMetadata findResourceMetadata(String beanName, Class<?> clazz, @Nullable PropertyValues pvs) {
 		// Fall back to class name as cache key, for backwards compatibility with custom callers.
 		String cacheKey = (StringUtils.hasLength(beanName) ? beanName : clazz.getName());
 		// Quick check on the concurrent map first, with minimal locking.
@@ -325,7 +327,7 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 		return metadata;
 	}
 
-	private InjectionMetadata buildResourceMetadata(final Class<?> clazz) {
+	private InjectionMetadata buildResourceMetadata(Class<?> clazz) {
 		if (!AnnotationUtils.isCandidateClass(clazz, resourceAnnotationTypes)) {
 			return InjectionMetadata.EMPTY;
 		}
@@ -421,13 +423,14 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 			public void releaseTarget(Object target) {
 			}
 		};
+
 		ProxyFactory pf = new ProxyFactory();
 		pf.setTargetSource(ts);
 		if (element.lookupType.isInterface()) {
 			pf.addInterface(element.lookupType);
 		}
-		ClassLoader classLoader = (this.beanFactory instanceof ConfigurableBeanFactory ?
-				((ConfigurableBeanFactory) this.beanFactory).getBeanClassLoader() : null);
+		ClassLoader classLoader = (this.beanFactory instanceof ConfigurableBeanFactory configurableBeanFactory ?
+				configurableBeanFactory.getBeanClassLoader() : null);
 		return pf.getProxy(classLoader);
 	}
 
@@ -441,12 +444,23 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 	protected Object getResource(LookupElement element, @Nullable String requestingBeanName)
 			throws NoSuchBeanDefinitionException {
 
+		// JNDI lookup to perform?
+		String jndiName = null;
 		if (StringUtils.hasLength(element.mappedName)) {
-			return this.jndiFactory.getBean(element.mappedName, element.lookupType);
+			jndiName = element.mappedName;
 		}
-		if (this.alwaysUseJndiLookup) {
-			return this.jndiFactory.getBean(element.name, element.lookupType);
+		else if (this.alwaysUseJndiLookup) {
+			jndiName = element.name;
 		}
+		if (jndiName != null) {
+			if (this.jndiFactory == null) {
+				throw new NoSuchBeanDefinitionException(element.lookupType,
+						"No JNDI factory configured - specify the 'jndiFactory' property");
+			}
+			return this.jndiFactory.getBean(jndiName, element.lookupType);
+		}
+
+		// Regular resource autowiring
 		if (this.resourceFactory == null) {
 			throw new NoSuchBeanDefinitionException(element.lookupType,
 					"No resource factory configured - specify the 'resourceFactory' property");
@@ -470,18 +484,17 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 		Set<String> autowiredBeanNames;
 		String name = element.name;
 
-		if (factory instanceof AutowireCapableBeanFactory) {
-			AutowireCapableBeanFactory beanFactory = (AutowireCapableBeanFactory) factory;
+		if (factory instanceof AutowireCapableBeanFactory autowireCapableBeanFactory) {
 			DependencyDescriptor descriptor = element.getDependencyDescriptor();
 			if (this.fallbackToDefaultTypeMatch && element.isDefaultName && !factory.containsBean(name)) {
 				autowiredBeanNames = new LinkedHashSet<>();
-				resource = beanFactory.resolveDependency(descriptor, requestingBeanName, autowiredBeanNames, null);
+				resource = autowireCapableBeanFactory.resolveDependency(descriptor, requestingBeanName, autowiredBeanNames, null);
 				if (resource == null) {
 					throw new NoSuchBeanDefinitionException(element.getLookupType(), "No resolvable resource object");
 				}
 			}
 			else {
-				resource = beanFactory.resolveBeanByName(name, descriptor);
+				resource = autowireCapableBeanFactory.resolveBeanByName(name, descriptor);
 				autowiredBeanNames = Collections.singleton(name);
 			}
 		}
@@ -490,11 +503,10 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 			autowiredBeanNames = Collections.singleton(name);
 		}
 
-		if (factory instanceof ConfigurableBeanFactory) {
-			ConfigurableBeanFactory beanFactory = (ConfigurableBeanFactory) factory;
+		if (factory instanceof ConfigurableBeanFactory configurableBeanFactory) {
 			for (String autowiredBeanName : autowiredBeanNames) {
-				if (requestingBeanName != null && beanFactory.containsBean(autowiredBeanName)) {
-					beanFactory.registerDependentBean(autowiredBeanName, requestingBeanName);
+				if (requestingBeanName != null && configurableBeanFactory.containsBean(autowiredBeanName)) {
+					configurableBeanFactory.registerDependentBean(autowiredBeanName, requestingBeanName);
 				}
 			}
 		}
@@ -649,8 +661,8 @@ public class CommonAnnotationBeanPostProcessor extends InitDestroyAnnotationBean
 				if (beanFactory != null && beanFactory.containsBean(this.beanName)) {
 					// Local match found for explicitly specified local bean name.
 					Object bean = beanFactory.getBean(this.beanName, this.lookupType);
-					if (requestingBeanName != null && beanFactory instanceof ConfigurableBeanFactory) {
-						((ConfigurableBeanFactory) beanFactory).registerDependentBean(this.beanName, requestingBeanName);
+					if (requestingBeanName != null && beanFactory instanceof ConfigurableBeanFactory configurableBeanFactory) {
+						configurableBeanFactory.registerDependentBean(this.beanName, requestingBeanName);
 					}
 					return bean;
 				}
